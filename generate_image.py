@@ -1,65 +1,60 @@
 import torch
-from diffusers import DiffusionPipeline
+from diffusers import StableDiffusionPipeline, StableDiffusionLatentUpscalePipeline
 
 # --- Configuration ---
-# Model ID from Hugging Face. "runwayml/stable-diffusion-v1-5" is a popular choice.
-# You can find other models at https://huggingface.co/models?pipeline_tag=text-to-image
-MODEL_ID = "runwayml/stable-diffusion-v1-5"
-PROMPT = "a photograph of an astronaut riding a horse, with only one arm visible"
-OUTPUT_FILENAME = "generated_image.png"
+PROMPT = "a photograph of an astronaut riding a horse"
+OUTPUT_FILENAME = "generated_image_upscaled.png"
+BASE_MODEL_ID = "runwayml/stable-diffusion-v1-5"
+UPSCALER_MODEL_ID = "stabilityai/sd-x2-latent-upscaler"
 
-def generate_image(pipe, prompt, output_filename, num_inference_steps=20):
+def generate_upscaled_image():
     """
-    Uses a pre-loaded Stable Diffusion pipeline to generate an image from a text prompt.
+    Generates a high-quality base image and then uses an AI upscaler
+    to increase its resolution.
     """
-    print(f"\nGenerating image for prompt: '{prompt}'")
-    print("This can take a moment...")
-    try:
-        image = pipe(prompt, num_inference_steps=num_inference_steps).images[0]
-        image.save(output_filename)
-        print(f"\nSuccessfully saved image as '{output_filename}'")
-    except Exception as e:
-        print(f"\nAn error occurred during image generation: {e}")
-        print("This could be due to memory constraints. If you are running out of GPU memory,")
-        print("consider using a smaller model or reducing the image resolution if possible.")
-
-if __name__ == "__main__":
     # --- Device Setup ---
     if not torch.cuda.is_available():
-        print("Warning: CUDA is not available. This will be very slow on the CPU.")
-        device = "cpu"
-        torch_dtype = torch.float32
-    else:
-        device = "cuda"
-        torch_dtype = torch.float16
+        print("Error: CUDA is not available. This script requires a GPU.")
+        return
+    device = "cuda"
+    torch_dtype = torch.float16
 
-    # --- Model Loading ---
-    print(f"Loading model: {MODEL_ID}")
-    print("This may take a few minutes and require a good internet connection on the first run.")
+    # --- Load Base Pipeline ---
+    print(f"Loading base model: {BASE_MODEL_ID}")
+    pipe = StableDiffusionPipeline.from_pretrained(
+        BASE_MODEL_ID, torch_dtype=torch_dtype
+    ).to(device)
 
-    try:
-        pipe = DiffusionPipeline.from_pretrained(
-            MODEL_ID,
-            torch_dtype=torch_dtype,
-            local_files_only=True
-        )
-        print("Model loaded from local cache.")
-    except EnvironmentError:
-        print("Could not find model in local cache. Downloading from Hugging Face Hub...")
-        pipe = DiffusionPipeline.from_pretrained(
-            MODEL_ID,
-            torch_dtype=torch_dtype,
-            local_files_only=False
-        )
+    # --- Load Upscaler Pipeline ---
+    print(f"Loading upscaler model: {UPSCALER_MODEL_ID}")
+    upscaler = StableDiffusionLatentUpscalePipeline.from_pretrained(
+        UPSCALER_MODEL_ID, torch_dtype=torch_dtype
+    ).to(device)
 
-    pipe = pipe.to(device)
-    pipe.enable_attention_slicing()  # Enable attention slicing for speed/memory
+    # --- Stage 1: Generate Base Image ---
+    print("\nStage 1: Generating 768x768 base image (40 steps)...")
+    # We generate in latent space to pass directly to the upscaler
+    base_latents = pipe(
+        prompt=PROMPT,
+        height=768,
+        width=768,
+        num_inference_steps=40,
+        output_type="latent",
+    ).images[0]
 
-    # --- Image Generation ---
-    try:
-        generate_image(pipe, PROMPT, OUTPUT_FILENAME, num_inference_steps=20)
-        generate_image(pipe, PROMPT, "generated_image_2.png", num_inference_steps=20)
-    except Exception as e:
-        print(f"\nAn error occurred during image generation: {e}")
-        print("This could be due to memory constraints. If you are running out of GPU memory,")
-        print("consider using a smaller model or reducing the image resolution if possible.")
+    # --- Stage 2: Upscale Image ---
+    print("Stage 2: Upscaling image to 1536x1536 (20 steps)...")
+    upscaled_image = upscaler(
+        prompt=PROMPT,
+        image=base_latents,
+        num_inference_steps=20,
+        guidance_scale=0, # This should be 0 for the latent upscaler
+    ).images[0]
+
+    # --- Save Final Image ---
+    print(f"\nSaving upscaled image as '{OUTPUT_FILENAME}'")
+    upscaled_image.save(OUTPUT_FILENAME)
+    print("Done!")
+
+if __name__ == "__main__":
+    generate_upscaled_image()
